@@ -8,6 +8,7 @@ import ctypes
 import time
 import urllib.request
 import urllib.error
+import threading  # <-- added
 
 # ---------- Versioning ----------
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/GreenCore16/BackgroundBack/master/Version.md"
@@ -77,7 +78,7 @@ if not is_admin():
 # Build APP_TITLE dynamically from local Version.md
 _LOCAL_VERSION = get_local_version() or "V2.9"
 APP_TITLE = f"BackgroundBack {_LOCAL_VERSION}"
-WINDOW_ICON = 'assets/window_icon.ico'  # <-- moved into assets/
+WINDOW_ICON = 'assets/window_icon.ico'  # <-- in assets/
 
 def select_file():
     file_path = filedialog.askopenfilename(
@@ -111,15 +112,43 @@ def refresh_wallpaper():
         SPI_SETDESKWALLPAPER, 0, None, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE)
     return result != 0
 
-def restart_explorer():
+# ----- Graceful Explorer Restart (Task Manager equivalent) -----
+def _is_process_running(exe_name: str) -> bool:
     try:
-        subprocess.run(["taskkill", "/im", "explorer.exe"], check=True)
-        time.sleep(1)
-        subprocess.Popen("explorer.exe")
-        return True
-    except Exception as e:
-        print("Restart explorer error:", e)
+        out = subprocess.check_output(["tasklist"], text=True, creationflags=0x08000000)
+        exe = exe_name.lower()
+        return any(line.lower().startswith(exe) for line in out.splitlines())
+    except Exception:
         return False
+
+def _wait_for(predicate, timeout=10.0, interval=0.25):
+    end = time.time() + timeout
+    while time.time() < end:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()
+
+def restart_explorer_graceful() -> bool:
+    """
+    Ask Explorer to restart itself (same behavior Task Manager uses).
+    No force killing; Explorer handles shutdown & relaunch.
+    """
+    try:
+        # Trigger Explorer's built-in graceful restart
+        subprocess.run(["explorer.exe", "/restart"], check=False, creationflags=0x08000000)
+
+        # Give it a moment to exit and start back up
+        time.sleep(0.5)
+
+        # Wait for explorer.exe to be running again (up to ~10s)
+        # Some systems may keep it running while recycling the shell; this still returns True.
+        started = _wait_for(lambda: _is_process_running("explorer.exe"), timeout=10.0)
+        return started
+    except Exception as e:
+        print("restart_explorer_graceful error:", e)
+        return False
+# ---------------------------------------------------------------
 
 def change_background():
     path = entry_var.get()
@@ -134,10 +163,12 @@ def change_background():
     if refresh_wallpaper():
         messagebox.showinfo("Success", "Background changed successfully!")
     else:
-        if restart_explorer():
-            messagebox.showinfo("Success", "Background changed successfully!")
-        else:
-            messagebox.showwarning("Warning", "Failed to restart Explorer automatically.\nRestart manually.")
+        # If SPI path fails, we do NOT force a restart here anymore.
+        messagebox.showwarning(
+            "Notice",
+            "The desktop didn’t refresh immediately. "
+            "You can use Advanced → “Restart Windows Explorer” for a clean restart."
+        )
 
 def apply_advanced():
     if var_delete_wallpaper_policy.get():
@@ -167,10 +198,21 @@ def apply_advanced():
             messagebox.showerror("Error", f"Unexpected error:\n{e}")
 
     if var_restart_explorer.get():
-        if restart_explorer():
-            messagebox.showinfo("Success", "Explorer restarted successfully.")
-        else:
-            messagebox.showerror("Error", "Failed to restart Explorer.")
+        # Disable button to prevent double-trigger during restart
+        apply_adv_btn.configure(state="disabled")
+
+        def _do_restart():
+            ok = restart_explorer_graceful()
+            def _finish():
+                var_restart_explorer.set(False)           # auto-untick after use
+                apply_adv_btn.configure(state="normal")   # re-enable
+                if ok:
+                    messagebox.showinfo("Success", "Windows Explorer restarted.")
+                else:
+                    messagebox.showerror("Error", "Could not restart Windows Explorer.")
+            root.after(0, _finish)
+
+        threading.Thread(target=_do_restart, daemon=True).start()
 
 def toggle_advanced():
     global advanced_open
@@ -256,7 +298,7 @@ advanced_frame = ttk.Frame(root, padding=(20, 10), relief="groove", borderwidth=
 
 var_delete_wallpaper_policy = tk.BooleanVar()
 chk_delete_policy = ttk.Checkbutton(
-    advanced_frame, text="Delete Wallpaper Policy Registry Key", variable=var_delete_wallpaper_policy
+    advanced_frame, text="Delete Wallpaper Registry Key", variable=var_delete_wallpaper_policy
 )
 chk_delete_policy.pack(anchor='w', pady=3)
 
@@ -268,7 +310,7 @@ chk_nochangingwallpaper.pack(anchor='w', pady=3)
 
 var_restart_explorer = tk.BooleanVar()
 chk_restart_explorer = ttk.Checkbutton(
-    advanced_frame, text="Restart Explorer After Changes", variable=var_restart_explorer
+    advanced_frame, text="Restart Windows Explorer", variable=var_restart_explorer
 )
 chk_restart_explorer.pack(anchor='w', pady=3)
 
