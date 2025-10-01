@@ -10,7 +10,6 @@ import urllib.request
 import urllib.error
 
 # ---------- Versioning ----------
-# Change this to the RAW URL of Version.md in your GitHub repo
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/GreenCore16/BackgroundBack/master/Version.md"
 LOCAL_VERSION_FILE = "Version.md"
 
@@ -22,11 +21,9 @@ def read_text_file(path: str) -> str:
         return ""
 
 def normalize_version(s: str) -> str:
-    # Keep it simple: trim and uppercase first token like "V2.9"
     return s.strip().splitlines()[0].strip()
 
 def get_local_version() -> str:
-    # Try to read the Version.md from the bundled resources
     return normalize_version(read_text_file(resource_path(LOCAL_VERSION_FILE)))
 
 def get_remote_version(timeout_sec: float = 3.0) -> str:
@@ -35,12 +32,11 @@ def get_remote_version(timeout_sec: float = 3.0) -> str:
             text = resp.read().decode("utf-8", errors="ignore")
             return normalize_version(text)
     except (urllib.error.URLError, urllib.error.HTTPError, ValueError, TimeoutError):
-        return ""  # Silently ignore connectivity errors per your requirement
+        return ""
 
 def prompt_if_outdated(local_v: str, remote_v: str):
     if not remote_v:
-        return  # No internet or fetch failure; proceed silently
-    # Compare case-insensitively and ignore whitespace
+        return
     if local_v.strip().lower() != remote_v.strip().lower():
         messagebox.showinfo(
             "Update Available",
@@ -79,9 +75,9 @@ if not is_admin():
     run_as_admin()
 
 # Build APP_TITLE dynamically from local Version.md
-_LOCAL_VERSION = get_local_version() or "V2.9"  # fallback if file missing
+_LOCAL_VERSION = get_local_version() or "V2.9"
 APP_TITLE = f"BackgroundBack {_LOCAL_VERSION}"
-WINDOW_ICON = 'window_icon.ico'
+WINDOW_ICON = 'assets/window_icon.ico'  # <-- moved into assets/
 
 def select_file():
     file_path = filedialog.askopenfilename(
@@ -98,7 +94,6 @@ def set_wallpaper_registry(path):
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
         except FileNotFoundError:
             key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path)
-
         winreg.SetValueEx(key, "Wallpaper", 0, winreg.REG_SZ, path)
         winreg.CloseKey(key)
         return True
@@ -112,7 +107,6 @@ def refresh_wallpaper():
     SPI_SETDESKWALLPAPER = 20
     SPIF_UPDATEINIFILE = 0x01
     SPIF_SENDCHANGE = 0x02
-
     result = ctypes.windll.user32.SystemParametersInfoW(
         SPI_SETDESKWALLPAPER, 0, None, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE)
     return result != 0
@@ -146,7 +140,6 @@ def change_background():
             messagebox.showwarning("Warning", "Failed to restart Explorer automatically.\nRestart manually.")
 
 def apply_advanced():
-    # Delete wallpaper policy registry key
     if var_delete_wallpaper_policy.get():
         try:
             key_path = r"Software\Microsoft\Windows\CurrentVersion\Policies\System"
@@ -160,7 +153,6 @@ def apply_advanced():
         except Exception as e:
             messagebox.showerror("Error", f"Unexpected error:\n{e}")
 
-    # Delete NoChangingWallPaper key
     if var_nochangingwallpaper.get():
         try:
             key_path = r"Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop"
@@ -174,7 +166,6 @@ def apply_advanced():
         except Exception as e:
             messagebox.showerror("Error", f"Unexpected error:\n{e}")
 
-    # Restart Explorer if requested
     if var_restart_explorer.get():
         if restart_explorer():
             messagebox.showinfo("Success", "Explorer restarted successfully.")
@@ -209,12 +200,11 @@ try:
 except Exception:
     pass
 
-# ---- Version check happens right after Tk initializes (so messagebox can show) ----
+# ---- Version check after Tk init ----
 try:
     remote_version = get_remote_version(timeout_sec=3.0)
     prompt_if_outdated(_LOCAL_VERSION, remote_version)
 except Exception:
-    # Never crash on version check; continue silently
     pass
 
 style = ttk.Style(root)
