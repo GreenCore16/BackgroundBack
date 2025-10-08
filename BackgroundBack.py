@@ -8,11 +8,20 @@ import ctypes
 import time
 import urllib.request
 import urllib.error
-import threading  # <-- added
+import threading
 
 # ---------- Versioning ----------
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/GreenCore16/BackgroundBack/master/Version.md"
 LOCAL_VERSION_FILE = "Version.md"
+
+
+def resource_path(relative_path: str) -> str:
+    if getattr(sys, "frozen", False):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.abspath(os.path.dirname(__file__))
+    return os.path.join(base_path, relative_path)
+
 
 def read_text_file(path: str) -> str:
     try:
@@ -21,19 +30,23 @@ def read_text_file(path: str) -> str:
     except Exception:
         return ""
 
+
 def normalize_version(s: str) -> str:
-    return s.strip().splitlines()[0].strip()
+    return s.strip().splitlines()[0].strip() if s else ""
+
 
 def get_local_version() -> str:
     return normalize_version(read_text_file(resource_path(LOCAL_VERSION_FILE)))
+
 
 def get_remote_version(timeout_sec: float = 3.0) -> str:
     try:
         with urllib.request.urlopen(GITHUB_VERSION_URL, timeout=timeout_sec) as resp:
             text = resp.read().decode("utf-8", errors="ignore")
             return normalize_version(text)
-    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, TimeoutError):
+    except Exception:
         return ""
+
 
 def prompt_if_outdated(local_v: str, remote_v: str):
     if not remote_v:
@@ -47,46 +60,80 @@ def prompt_if_outdated(local_v: str, remote_v: str):
             "Click OK to continue."
         )
 
-# ---------- Existing code ----------
-def resource_path(relative_path: str) -> str:
-    if getattr(sys, "frozen", False):
-        base_path = sys._MEIPASS
-    else:
-        base_path = os.path.abspath(os.path.dirname(__file__))
-    return os.path.join(base_path, relative_path)
 
+# ---------- Admin Elevation ----------
 def is_admin():
+    """Check if running with administrator rights."""
+    try:
+        token = ctypes.wintypes.HANDLE()
+        TOKEN_QUERY = 0x0008
+        TokenElevation = 20
+        elevation = ctypes.wintypes.DWORD()
+        size = ctypes.wintypes.DWORD()
+
+        if ctypes.windll.advapi32.OpenProcessToken(
+            ctypes.windll.kernel32.GetCurrentProcess(), TOKEN_QUERY, ctypes.byref(token)
+        ):
+            ctypes.windll.advapi32.GetTokenInformation(
+                token, TokenElevation, ctypes.byref(elevation),
+                ctypes.sizeof(elevation), ctypes.byref(size)
+            )
+            return bool(elevation.value)
+    except Exception:
+        pass
+
+    # fallback
     try:
         return ctypes.windll.shell32.IsUserAnAdmin()
-    except:
+    except Exception:
         return False
 
+
 def run_as_admin():
+    """Relaunch with admin rights once. Exit if user declines."""
+    if "--elevated" in sys.argv:
+        return  # already elevated
+
     try:
-        ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", sys.executable, " ".join(f'"{arg}"' for arg in sys.argv), None, 1)
-        sys.exit()
+        params = " ".join(f'"{arg}"' for arg in sys.argv + ["--elevated"])
+        rc = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, params, os.getcwd(), 1
+        )
+        if rc > 32:
+            sys.exit(0)  # Relaunch succeeded → exit original
+        else:
+            messagebox.showwarning(
+                "Administrator Privileges Required",
+                "You declined elevation. The app cannot continue without administrator privileges."
+            )
+            sys.exit(1)
     except Exception as e:
-        messagebox.showerror("Administrator Privileges Required",
-                             f"Failed to elevate to administrator.\n\nError: {e}")
+        messagebox.showerror(
+            "Elevation Error",
+            f"Failed to elevate to administrator.\n\n{e}"
+        )
         sys.exit(1)
+
 
 # Always require admin
 if not is_admin():
     run_as_admin()
 
-# Build APP_TITLE dynamically from local Version.md
+
+# ---------- Build APP ----------
 _LOCAL_VERSION = get_local_version() or "V2.9"
 APP_TITLE = f"BackgroundBack {_LOCAL_VERSION}"
-WINDOW_ICON = 'assets/window_icon.ico'  # <-- in assets/
+WINDOW_ICON = "assets/window_icon.ico"
+
 
 def select_file():
     file_path = filedialog.askopenfilename(
         title="Select image file",
-        filetypes=[("Image files", "*.bmp;*.jpg;*.jpeg;*.png;*.gif")]
+        filetypes=[("Image files", "*.bmp;*.jpg;*.jpeg;*.png;*.gif")],
     )
     if file_path:
         entry_var.set(file_path)
+
 
 def set_wallpaper_registry(path):
     key_path = r"Software\Microsoft\Windows\CurrentVersion\Policies\System"
@@ -101,18 +148,19 @@ def set_wallpaper_registry(path):
     except PermissionError:
         return False
     except Exception as e:
-        messagebox.showerror("Registry Error", f"Unexpected error updating registry:\n{e}")
+        messagebox.showerror("Registry Error", f"Unexpected error:\n{e}")
         return False
+
 
 def refresh_wallpaper():
     SPI_SETDESKWALLPAPER = 20
     SPIF_UPDATEINIFILE = 0x01
     SPIF_SENDCHANGE = 0x02
-    result = ctypes.windll.user32.SystemParametersInfoW(
-        SPI_SETDESKWALLPAPER, 0, None, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE)
-    return result != 0
+    return ctypes.windll.user32.SystemParametersInfoW(
+        SPI_SETDESKWALLPAPER, 0, None, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE
+    ) != 0
 
-# ----- Graceful Explorer Restart (Task Manager equivalent) -----
+
 def _is_process_running(exe_name: str) -> bool:
     try:
         out = subprocess.check_output(["tasklist"], text=True, creationflags=0x08000000)
@@ -121,7 +169,9 @@ def _is_process_running(exe_name: str) -> bool:
     except Exception:
         return False
 
+
 def _wait_for(predicate, timeout=10.0, interval=0.25):
+    import time
     end = time.time() + timeout
     while time.time() < end:
         if predicate():
@@ -129,26 +179,15 @@ def _wait_for(predicate, timeout=10.0, interval=0.25):
         time.sleep(interval)
     return predicate()
 
+
 def restart_explorer_graceful() -> bool:
-    """
-    Ask Explorer to restart itself (same behavior Task Manager uses).
-    No force killing; Explorer handles shutdown & relaunch.
-    """
     try:
-        # Trigger Explorer's built-in graceful restart
         subprocess.run(["explorer.exe", "/restart"], check=False, creationflags=0x08000000)
-
-        # Give it a moment to exit and start back up
         time.sleep(0.5)
-
-        # Wait for explorer.exe to be running again (up to ~10s)
-        # Some systems may keep it running while recycling the shell; this still returns True.
-        started = _wait_for(lambda: _is_process_running("explorer.exe"), timeout=10.0)
-        return started
-    except Exception as e:
-        print("restart_explorer_graceful error:", e)
+        return _wait_for(lambda: _is_process_running("explorer.exe"), timeout=10.0)
+    except Exception:
         return False
-# ---------------------------------------------------------------
+
 
 def change_background():
     path = entry_var.get()
@@ -157,18 +196,18 @@ def change_background():
         return
 
     if not set_wallpaper_registry(path):
-        messagebox.showerror("Error", "Access denied: could not update registry.\nRun as administrator.")
+        messagebox.showerror("Error", "Access denied. Run as administrator.")
         return
 
     if refresh_wallpaper():
         messagebox.showinfo("Success", "Background changed successfully!")
     else:
-        # If SPI path fails, we do NOT force a restart here anymore.
         messagebox.showwarning(
             "Notice",
             "The desktop didn’t refresh immediately. "
-            "You can use Advanced → “Restart Windows Explorer” for a clean restart."
+            "Use Advanced → Restart Windows Explorer.",
         )
+
 
 def apply_advanced():
     if var_delete_wallpaper_policy.get():
@@ -176,43 +215,45 @@ def apply_advanced():
             key_path = r"Software\Microsoft\Windows\CurrentVersion\Policies\System"
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS) as key:
                 winreg.DeleteValue(key, "Wallpaper")
-            messagebox.showinfo("Success", "Wallpaper policy registry key deleted.")
+            messagebox.showinfo("Success", "Wallpaper policy key deleted.")
         except FileNotFoundError:
-            messagebox.showinfo("Info", "Wallpaper registry key does not exist.")
+            messagebox.showinfo("Info", "Wallpaper key does not exist.")
         except PermissionError:
-            messagebox.showerror("Error", "Permission denied. Run as administrator.")
+            messagebox.showerror("Error", "Permission denied.")
         except Exception as e:
-            messagebox.showerror("Error", f"Unexpected error:\n{e}")
+            messagebox.showerror("Error", str(e))
 
     if var_nochangingwallpaper.get():
         try:
             key_path = r"Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop"
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS) as key:
                 winreg.DeleteValue(key, "NoChangingWallPaper")
-            messagebox.showinfo("Success", "NoChangingWallPaper registry key deleted.")
+            messagebox.showinfo("Success", "NoChangingWallPaper key deleted.")
         except FileNotFoundError:
-            messagebox.showinfo("Info", "NoChangingWallPaper registry key does not exist.")
+            messagebox.showinfo("Info", "NoChangingWallPaper key does not exist.")
         except PermissionError:
-            messagebox.showerror("Error", "Permission denied. Run as administrator.")
+            messagebox.showerror("Error", "Permission denied.")
         except Exception as e:
-            messagebox.showerror("Error", f"Unexpected error:\n{e}")
+            messagebox.showerror("Error", str(e))
 
     if var_restart_explorer.get():
-        # Disable button to prevent double-trigger during restart
         apply_adv_btn.configure(state="disabled")
 
         def _do_restart():
             ok = restart_explorer_graceful()
+
             def _finish():
-                var_restart_explorer.set(False)           # auto-untick after use
-                apply_adv_btn.configure(state="normal")   # re-enable
+                var_restart_explorer.set(False)
+                apply_adv_btn.configure(state="normal")
                 if ok:
                     messagebox.showinfo("Success", "Windows Explorer restarted.")
                 else:
-                    messagebox.showerror("Error", "Could not restart Windows Explorer.")
+                    messagebox.showerror("Error", "Could not restart Explorer.")
+
             root.after(0, _finish)
 
         threading.Thread(target=_do_restart, daemon=True).start()
+
 
 def toggle_advanced():
     global advanced_open
@@ -222,12 +263,13 @@ def toggle_advanced():
         root.geometry(f"{BASE_WIDTH}x{BASE_HEIGHT}")
         advanced_open = False
     else:
-        advanced_frame.pack(fill='x', padx=20, pady=(5, 15))
+        advanced_frame.pack(fill="x", padx=20, pady=(5, 15))
         adv_toggle_btn.configure(text="▼ Advanced Options")
         root.geometry(f"{BASE_WIDTH}x{EXPANDED_HEIGHT}")
         advanced_open = True
 
-# ------------------ UI ------------------
+
+# ---------- UI ----------
 BASE_WIDTH = 560
 BASE_HEIGHT = 250
 EXPANDED_HEIGHT = 400
@@ -242,86 +284,77 @@ try:
 except Exception:
     pass
 
-# ---- Version check after Tk init ----
-try:
+# Check for version updates (threaded)
+def _check_version():
     remote_version = get_remote_version(timeout_sec=3.0)
-    prompt_if_outdated(_LOCAL_VERSION, remote_version)
-except Exception:
-    pass
+    root.after(0, lambda: prompt_if_outdated(_LOCAL_VERSION, remote_version))
+
+threading.Thread(target=_check_version, daemon=True).start()
 
 style = ttk.Style(root)
 try:
-    style.theme_use('vista')
+    style.theme_use("vista")
 except:
     try:
-        style.theme_use('clam')
+        style.theme_use("clam")
     except:
         pass
 
-# Header
 header_frame = ttk.Frame(root, padding=(12, 15))
-header_frame.pack(fill='x')
+header_frame.pack(fill="x")
 
-header_label = ttk.Label(header_frame, text="BackgroundBack", font=('Segoe UI', 18, 'bold'))
+header_label = ttk.Label(header_frame, text="BackgroundBack", font=("Segoe UI", 18, "bold"))
 header_label.pack()
-
-sub_label = ttk.Label(header_frame, text="A Background Restore Tool", font=('Segoe UI', 10))
+sub_label = ttk.Label(header_frame, text="A Background Restore Tool", font=("Segoe UI", 10))
 sub_label.pack()
 
-# Content Frame
 content_frame = ttk.Frame(root, padding=(20, 10))
-content_frame.pack(fill='x')
+content_frame.pack(fill="x")
 
 entry_var = tk.StringVar()
-entry = ttk.Entry(content_frame, textvariable=entry_var, font=('Segoe UI', 10))
-entry.pack(side='left', fill='x', expand=True, padx=(0, 10), ipady=3)
+entry = ttk.Entry(content_frame, textvariable=entry_var, font=("Segoe UI", 10))
+entry.pack(side="left", fill="x", expand=True, padx=(0, 10), ipady=3)
 
 browse_btn = ttk.Button(content_frame, text="Browse Files", command=select_file)
-browse_btn.pack(side='right')
+browse_btn.pack(side="right")
 
-# Buttons Frame
 buttons_frame = ttk.Frame(root, padding=(20, 10))
-buttons_frame.pack(fill='x')
+buttons_frame.pack(fill="x")
 
 exit_btn = ttk.Button(buttons_frame, text="Exit", command=root.destroy)
 change_btn = ttk.Button(buttons_frame, text="Change Background", command=change_background)
+exit_btn.pack(side="left", padx=(130, 10), ipadx=10, ipady=4)
+change_btn.pack(side="left", padx=(10, 0), ipadx=10, ipady=4)
 
-exit_btn.pack(side='left', padx=(130, 10), ipadx=10, ipady=4)
-change_btn.pack(side='left', padx=(10, 0), ipadx=10, ipady=4)
-
-# Advanced Toggle
 adv_toggle_btn = ttk.Button(root, text="▶ Advanced Options", command=toggle_advanced)
-adv_toggle_btn.pack(anchor='w', padx=20, pady=(5, 0))
+adv_toggle_btn.pack(anchor="w", padx=20, pady=(5, 0))
 
-# Advanced Frame (hidden initially)
 advanced_frame = ttk.Frame(root, padding=(20, 10), relief="groove", borderwidth=2)
 
 var_delete_wallpaper_policy = tk.BooleanVar()
 chk_delete_policy = ttk.Checkbutton(
     advanced_frame, text="Delete Wallpaper Registry Key", variable=var_delete_wallpaper_policy
 )
-chk_delete_policy.pack(anchor='w', pady=3)
+chk_delete_policy.pack(anchor="w", pady=3)
 
 var_nochangingwallpaper = tk.BooleanVar()
 chk_nochangingwallpaper = ttk.Checkbutton(
     advanced_frame, text="Delete NoChangingWallPaper Registry Key", variable=var_nochangingwallpaper
 )
-chk_nochangingwallpaper.pack(anchor='w', pady=3)
+chk_nochangingwallpaper.pack(anchor="w", pady=3)
 
 var_restart_explorer = tk.BooleanVar()
 chk_restart_explorer = ttk.Checkbutton(
     advanced_frame, text="Restart Windows Explorer", variable=var_restart_explorer
 )
-chk_restart_explorer.pack(anchor='w', pady=3)
+chk_restart_explorer.pack(anchor="w", pady=3)
 
 apply_adv_btn = ttk.Button(advanced_frame, text="Apply Advanced", command=apply_advanced)
 apply_adv_btn.pack(pady=(10, 5), ipadx=8, ipady=3)
 
-# Track advanced state
 advanced_open = False
 
-# Key bindings
-root.bind('<Return>', lambda e: change_background())
-root.bind('<Escape>', lambda e: root.destroy())
+root.bind("<Return>", lambda e: change_background())
+root.bind("<Escape>", lambda e: root.destroy())
 
 root.mainloop()
